@@ -726,6 +726,44 @@ def test_mesh_ground_collision_index(test, device):
     assert_np_equal(model.rigid_contact_normal.numpy()[:3], np.tile([0.0, 1.0, 0.0], (3, 1)))
 
 
+@wp.kernel
+def contact_x(points: wp.array(dtype=wp.vec3), slot: int, loss: wp.array(dtype=float)):
+    loss[0] = points[slot][0]
+
+
+def test_contact_gradient_across_calls(test, device):
+    builder = wp.sim.ModelBuilder()
+    sphere = builder.add_body(origin=wp.transform((-3.0, 0.1, 0.0), wp.quat_identity()))
+    builder.add_shape_sphere(body=sphere, radius=0.25)
+    capsule = builder.add_body(origin=wp.transform((0.0, 0.3, 0.0), wp.quat_identity()))
+    shape = builder.add_shape_capsule(body=capsule, half_height=0.25, radius=0.6)
+    model = builder.finalize(device=device, requires_grad=True)
+    model.ground = True
+    first, second = model.state(), model.state()
+    poses = second.body_q.numpy().copy()
+    poses[sphere, 1] = 4.0
+    second.body_q.assign(poses)
+    loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+    with wp.Tape() as tape:
+        wp.sim.collide(model, first)
+        tids = model.rigid_contact_tids.numpy()
+        (candidate,) = np.flatnonzero(
+            (model.rigid_contact_broad_shape0.numpy() == shape)
+            & (model.rigid_contact_point_id.numpy() == 0)
+            & (tids >= 0)
+        )
+        wp.launch(
+            contact_x, 1, inputs=[model.rigid_contact_point1, int(tids[candidate])], outputs=[loss], device=device
+        )
+        wp.sim.collide(model, second)
+    tape.backward(loss)
+    grads = first.body_q.grad.numpy()
+    test.assertEqual(grads[sphere, 0], 0.0)
+    test.assertEqual(grads[capsule, 0], 1.0)
+    # At the identity, d(q_z)/d(angle) = 1/2. The lower endpoint has x = 0.25 sin(angle).
+    test.assertAlmostEqual(0.5 * grads[capsule, 5], 0.25, places=5)
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -737,6 +775,9 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
+add_function_test(
+    TestCollision, "test_contact_gradient_across_calls", test_contact_gradient_across_calls, devices=devices
+)
 
 if __name__ == "__main__":
     wp.clear_kernel_cache()

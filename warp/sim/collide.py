@@ -1618,6 +1618,11 @@ def collide(
             # clear old count
             model.rigid_contact_count.zero_()
 
+            if requires_grad:
+                # The narrow-phase adjoint needs the shape pair and feature from this particular call.
+                model.rigid_contact_broad_shape0 = wp.empty_like(model.rigid_contact_broad_shape0)
+                model.rigid_contact_broad_shape1 = wp.empty_like(model.rigid_contact_broad_shape1)
+                model.rigid_contact_point_id = wp.empty_like(model.rigid_contact_point_id)
             model.rigid_contact_broad_shape0.fill_(-1)
             model.rigid_contact_broad_shape1.fill_(-1)
 
